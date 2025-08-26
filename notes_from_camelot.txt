@@ -1,0 +1,58 @@
+def extract_notes_from_camelot_df(table_df: pd.DataFrame):
+    """
+    Works with Camelot stream tables where headers live in the first few rows.
+    1) Find the cell that equals 'Notes' (case-insensitive) within the first 6 rows.
+    2) Take that column and read values from the next row onward.
+    3) Extract unique note IDs like 3, 10, 11a. Return list[str].
+    """
+    if table_df is None or table_df.empty:
+        return []
+
+    df = table_df.fillna("").astype(str)
+
+    def norm(x: str) -> str:
+        return x.replace("\u00A0", " ").strip().lower()
+
+    header_row_idx, notes_col_idx = None, None
+    scan_rows = min(6, len(df))
+    # find where a cell == "Notes"
+    for r in range(scan_rows):
+        for c in range(df.shape[1]):
+            if norm(df.iat[r, c]) == "notes":
+                header_row_idx, notes_col_idx = r, c
+                break
+        if notes_col_idx is not None:
+            break
+
+    note_ids = []
+
+    if notes_col_idx is not None:
+        # read values from rows below the detected header row
+        for v in df.iloc[header_row_idx + 1:, notes_col_idx].tolist():
+            v = v.strip()
+            # accept "3", "(3)", "3a"
+            m = re.search(r"\b(\d+[A-Za-z]?)\b", v)
+            if m:
+                note_ids.append(m.group(1))
+    else:
+        # Fallback: some PDFs merge the note number into the label column.
+        # scan first 2–3 columns for small integers that look like note refs
+        for c in range(min(3, df.shape[1])):
+            for v in df.iloc[:, c].tolist():
+                for m in re.finditer(r"(?:^|\s|\()(\d{1,3}[A-Za-z]?)(?:\)|\s|$)", v):
+                    tok = m.group(1)
+                    # filter obvious non-notes like years
+                    if tok.isdigit() and int(tok) >= 1000:
+                        continue
+                    if tok in {"2022", "2023", "2024", "2025"}:
+                        continue
+                    note_ids.append(tok)
+
+    if not note_ids:
+        return []
+
+    def sort_key(x):
+        m = re.match(r"^(\d+)([A-Za-z]?)$", x)
+        return (int(m.group(1)) if m else 10**9, m.group(2) if m else "")
+
+    return sorted(set(note_ids), key=sort_key)
